@@ -251,7 +251,7 @@ IPAddress broadcastAddr(255, 255, 255, 255);
 // "/version" and show which firmware a given pedal is running (handy once
 // more than one pedal is in use, or when troubleshooting "did I actually
 // reflash the new build onto this one?").
-#define FIRMWARE_VERSION "1.5.6"
+#define FIRMWARE_VERSION "1.5.8"
 
 // Overrides WiFiManager's default button colors (blue background, white
 // text) with yellow/black. WiFiManager's own default button CSS is:
@@ -564,7 +564,11 @@ const char STATUS_PAGE_CSS[] =
     // whole page's height jump around as this text changes on its own
     // (every ~500ms, via updateAckState() below) without any user action -
     // reserving the same box size for every possible message avoids that.
-    "#ackstate{display:inline-block;width:230px;min-height:2.6em;vertical-align:top;}"
+    // display:block (not inline-block) so the value always starts fresh on
+    // its own line right under the "PC acknowledged:" label instead of
+    // continuing on the label's line and wrapping awkwardly after just the
+    // first word or two of the message.
+    "#ackstate{display:block;min-height:2.6em;}"
     "button:disabled,input:disabled{opacity:0.4;cursor:not-allowed;}"
     "</style>";
 
@@ -658,7 +662,11 @@ void handleStatusRoot() {
       : "not yet this session";
 
   String page = "<!DOCTYPE html><html><head><meta name='viewport' "
-      "content='width=device-width,initial-scale=1'>";
+      "content='width=device-width,initial-scale=1'>"
+      // Without an explicit <title>, the browser tab/taskbar entry falls
+      // back to showing the page's URL (its own IP address) instead -
+      // this gives it a fixed, recognizable name instead.
+      "<title>Rigol Pedal</title>";
   page += STATUS_PAGE_CSS;
   page += "</head><body>";
   page += STATUS_PAGE_LOGO;
@@ -666,7 +674,7 @@ void handleStatusRoot() {
   page += "<p><b>IP:</b> " + WiFi.localIP().toString() + "<br>";
   page += "<b>Wi-Fi network:</b> " + WiFi.SSID() + "<br>";
   page += "<b>Last trigger:</b> <span id='lasttrigger'>" + lastTrigger + "</span><br>";
-  page += "<b>PC acknowledged:</b> <span id='ackstate'>-</span><br>";
+  page += "<b>PC acknowledged:</b><br><span id='ackstate'>-</span>";
   page += "<b>Sleeping in:</b> <span id='sleeptimer'>" + String(remainingS) +
       "</span> s (any activity here resets this)</p>";
   // Full-width bar right after a fresh press, shrinking from the right as
