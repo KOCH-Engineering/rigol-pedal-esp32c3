@@ -169,6 +169,12 @@ still take a moment longer). The pedal shows this two ways:
 - The live status page's **PC acknowledged** line updates the same way,
   polled every ~500ms from a small `/trigger_ack` endpoint.
 
+The status page reserves a fixed 2-line-tall box for this message
+regardless of which state it's showing - the shortest ("waiting...") and
+longest ("no response yet (X.Xs) - is the app running?") text would
+otherwise wrap differently and make the page's height visibly jump around
+on its own every ~500ms as this updates.
+
 If neither ever fires, check that `rigol_speaking_multimeter.py` is
 actually running and that Windows Firewall isn't blocking the port (same
 troubleshooting as a trigger never arriving at all - see that project's
