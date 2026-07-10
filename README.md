@@ -174,6 +174,21 @@ actually running and that Windows Firewall isn't blocking the port (same
 troubleshooting as a trigger never arriving at all - see that project's
 README).
 
+## Fast recovery after waking up
+
+Every response from the live status page's endpoints (`/`, `/pin`,
+`/remaining`, `/trigger_ack`) sends `Connection: close` and
+`Cache-Control: no-store`. Without this, a browser tab left open across a
+deep-sleep cycle could end up reusing a now-dead keep-alive TCP connection
+from before the pedal slept (the Wi-Fi radio just switches off during deep
+sleep - there's no graceful close to tell the browser the link is gone), so
+the page's polling could take a long time (tens of seconds or more) to
+notice the pedal is back, rather than the ~1s its polling intervals are
+designed around. Forcing a fresh connection on every single poll means a
+truly-asleep pedal fails fast (nothing listening - instant refusal, not a
+hang), and the moment it's back up and listening again, the very next poll
+just works.
+
 ## Known limitations / possible follow-ups
 
 - No RTC-memory Wi-Fi channel/BSSID caching yet, which could speed up
