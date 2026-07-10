@@ -251,7 +251,7 @@ IPAddress broadcastAddr(255, 255, 255, 255);
 // "/version" and show which firmware a given pedal is running (handy once
 // more than one pedal is in use, or when troubleshooting "did I actually
 // reflash the new build onto this one?").
-#define FIRMWARE_VERSION "1.5.8"
+#define FIRMWARE_VERSION "1.5.9"
 
 // Overrides WiFiManager's default button colors (blue background, white
 // text) with yellow/black. WiFiManager's own default button CSS is:
@@ -850,9 +850,23 @@ void handleStatusRoot() {
         "}).catch(function(){});"
       "}"
       "setInterval(updateAckState, 500);"
+      // "Send test trigger now" used to be a plain HTML <form> POSTing to
+      // /trigger, which made the browser navigate (a 302 back to '/'),
+      // reloading the *entire* page from scratch - every field, including
+      // PC acknowledged/sleep timer/etc., briefly flashed back to its
+      // static placeholder before the polls above repopulated it a moment
+      // later. A real pedal press never navigates anywhere - it's only
+      // ever noticed via these same polls - so it just updates the text in
+      // place with no flash. Firing the POST via fetch() instead, with no
+      // navigation at all, makes the button behave identically to a real
+      // press: the very same polling loop above picks up the new state on
+      // its next tick.
+      "function sendTestTrigger(){"
+        "fetch('/trigger', {method: 'POST'}).catch(function(){});"
+      "}"
       "</script>";
-  page += "<form method='POST' action='/trigger'>"
-      "<button type='submit' id='triggerbtn'>Send test trigger now</button></form>";
+  page += "<button type='button' id='triggerbtn' onclick='sendTestTrigger()'>"
+      "Send test trigger now</button>";
   page += "<hr><h3>Settings</h3>";
   page += "<form method='POST' action='/save'>";
   page += "<label>Trigger UDP port<input type='number' min='1' max='65535' "
@@ -955,8 +969,15 @@ void handleStatusTrigger() {
   lastTriggerMs = millis();
   hasTriggeredThisWake = true;
   lastTriggerAcked = false; // waiting on the PC's ack for this new trigger
-  statusServer.sendHeader("Location", "/");
-  statusServer.send(302, "text/plain", "");
+  // Used to reply with a 302 redirect back to "/", so the browser's <form>
+  // POST would navigate there and reload the whole page. Now that the
+  // "Send test trigger now" button fires this via fetch() with no
+  // navigation (see handleStatusRoot()'s sendTestTrigger()), a plain 200 is
+  // enough - a 302 here would just make fetch() silently re-download "/" in
+  // the background for no reason.
+  statusServer.sendHeader("Connection", "close");
+  statusServer.sendHeader("Cache-Control", "no-store");
+  statusServer.send(200, "text/plain", "OK");
 }
 
 // Machine-readable version info, so the PC app can ask "which firmware is

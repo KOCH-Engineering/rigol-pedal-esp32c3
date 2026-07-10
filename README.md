@@ -138,19 +138,33 @@ change as you press/release it — handy for checking wiring and contact
 bounce without a multimeter — plus:
 
 - A **Send test trigger now** button, to confirm the PC app is receiving
-  triggers without needing to walk over and press the pedal.
+  triggers without needing to walk over and press the pedal. Fires via a
+  background request (no page navigation), so it updates in place exactly
+  like a real pedal press - it used to be a plain HTML form submit, which
+  reloaded the whole page and made every field flash back to its
+  placeholder before the polls repopulated it.
 - A settings form to change the **trigger UDP port** and the **stay-awake
   duration** (15–3600 seconds) — applied immediately and saved to flash,
   no reflash or Wi-Fi reconfiguration needed.
 - A **PC acknowledged** line showing whether the app on the PC actually
-  received the last trigger - "waiting..." right after a press, "yes
-  (Nms)" once it's confirmed, or a warning if nothing's come back after a
-  few seconds. See "PC acknowledgement" below for how this works.
+  received the last trigger - "waiting for PC ack..." right after a press,
+  "yes, 123 ms round-trip (press was 5 s ago)" once it's confirmed, or a
+  warning if nothing's come back after a few seconds. The "press was ... ago"
+  part matters once the page has been sitting open a while: a bare "yes
+  (123ms)" looked like fresh news no matter how long ago the actual press
+  was, since the round-trip time alone doesn't say when that happened. See
+  "PC acknowledgement" below for how this works.
 
 Loading the page or clicking either button also resets the sleep
 countdown. This page only exists while the pedal is awake — once it goes
 back to deep sleep it disappears from the network entirely until the next
 press; there's no way to wake it remotely.
+
+The **Last trigger** line ticks live off the same ~500ms poll that drives
+the PC-acknowledged line, instead of freezing at whatever it said when the
+page first loaded. The browser tab/taskbar entry reads "Rigol Pedal" (via
+an explicit `<title>`) rather than falling back to showing the page's own
+IP address.
 
 ## PC acknowledgement
 
@@ -169,11 +183,14 @@ still take a moment longer). The pedal shows this two ways:
 - The live status page's **PC acknowledged** line updates the same way,
   polled every ~500ms from a small `/trigger_ack` endpoint.
 
-The status page reserves a fixed 2-line-tall box for this message
-regardless of which state it's showing - the shortest ("waiting...") and
-longest ("no response yet (X.Xs) - is the app running?") text would
-otherwise wrap differently and make the page's height visibly jump around
-on its own every ~500ms as this updates.
+The status page reserves a fixed 2-line-tall box for this message,
+displayed on its own line under the "PC acknowledged:" label (not run on
+from the label itself), regardless of which state it's showing - the
+shortest ("waiting for PC ack...") and longest ("no response yet (X.Xs) -
+is the app running?") text would otherwise wrap differently, and even
+wrap awkwardly right after the label's first word or two, making the
+page's height and layout visibly jump around on its own every ~500ms as
+this updates.
 
 If neither ever fires, check that `rigol_speaking_multimeter.py` is
 actually running and that Windows Firewall isn't blocking the port (same
