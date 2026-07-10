@@ -23,6 +23,21 @@
   (GPIO2, GPIO8, GPIO9) that affect boot mode - so it's safe to use
   without any chance of interfering with flashing/boot.
 
+  GPIO pinout summary (see each #define's own comment further down for the
+  full reasoning behind the choice):
+    GPIO4  BUTTON_PIN            foot pedal switch -> GND (internal pull-up)
+    GPIO8  LED_PIN               onboard blue status LED (built into the board)
+    GPIO6  EXT_STATUS_LED_PIN    external mirror of the status LED above -
+                                 same on/off/blink state, wire your own LED
+                                 here + a resistor to GND if you want the
+                                 status visible from outside the enclosure
+    GPIO5  ACK_LED_PIN           external LED - blinks once the PC app
+                                 acknowledges a trigger (see sendTrigger()/
+                                 the udp.parsePacket() check in setup())
+  Only BUTTON_PIN is required for basic operation; EXT_STATUS_LED_PIN and
+  ACK_LED_PIN are both optional - leave them unconnected and the firmware
+  just drives an LED that isn't there, no harm done.
+
   ------------------------------------------------------------------------
   FIRST-TIME SETUP (Wi-Fi only)
   ------------------------------------------------------------------------
@@ -135,6 +150,49 @@
 // should be off, etc.), just flip this one constant.
 #define LED_ACTIVE_LOW true
 
+// A plain mirror of the onboard LED above, on its own external LED - so the
+// same status (blinking at boot, solid once Wi-Fi's up, blink on press, off
+// before sleep) is also visible from outside the pedal enclosure, not just
+// on the tiny onboard LED buried inside the box. Wire an external LED (with
+// a current-limiting resistor) between this pin and GND, same as the ack
+// LED below - deliberately its OWN pin rather than paralleling the onboard
+// LED_PIN directly, since that pin's already at/near its safe drive-current
+// budget with just the one onboard LED, and its exact polarity/physical
+// pad access is less certain than a plain header pin. GPIO6 is a spare
+// general-purpose pin (not a strapping pin, not used for flash/USB) -
+// rewire to a different free pin here if 6 is inconvenient on your layout.
+#define EXT_STATUS_LED_PIN 6
+// Independent of LED_ACTIVE_LOW - this is a different physical LED you're
+// wiring yourself, so its wiring orientation (and therefore polarity) is
+// entirely up to you. Flip this if it lights up backwards.
+#define EXT_STATUS_LED_ACTIVE_LOW false
+
+// A second, separate LED - not the onboard one above - dedicated purely to
+// showing that the PC app actually received and is processing the last
+// trigger, not just that the pedal thinks it sent one. Wire an external LED
+// (with a current-limiting resistor, a few hundred ohms) between this pin
+// and GND. GPIO5 is a plain general-purpose pin on the ESP32-C3 (not a
+// strapping pin like GPIO2/8/9, not used for flash/USB), so it's safe to
+// drive freely - rewire to a different free pin here if 5 is inconvenient
+// on your board layout.
+#define ACK_LED_PIN 5
+// Same reasoning as LED_ACTIVE_LOW above - flip this if the LED lights up
+// backwards from what's described where it's used.
+#define ACK_LED_ACTIVE_LOW false
+// How long the ack LED stays lit per blink - long enough to actually see,
+// short enough that back-to-back presses still read as distinct blinks
+// rather than one long glow.
+#define ACK_LED_BLINK_MS 150UL
+// Fixed local UDP port the pedal listens on for the PC app's one-byte
+// acknowledgement reply (see udp_trigger_listener's sock.sendto(b"A", addr)
+// on the PC side). Without explicitly binding here, the local port used by
+// beginPacket()/endPacket() for outgoing sends is whatever the WiFiUDP
+// library happens to pick internally - binding it ourselves up front makes
+// it a known, fixed target the PC can actually reply to. Deliberately a
+// different number from DEFAULT_TRIGGER_PORT below (that one's the PC's
+// listening port, this one's the pedal's own).
+#define PEDAL_UDP_LISTEN_PORT 47270
+
 // ---- Timing ----
 #define FORCE_SETUP_HOLD_MS 3000UL       // how long to hold the pedal to force re-setup
 #define DEFAULT_LINGER_S 300             // default: stay awake 5 min after a press
@@ -193,7 +251,7 @@ IPAddress broadcastAddr(255, 255, 255, 255);
 // "/version" and show which firmware a given pedal is running (handy once
 // more than one pedal is in use, or when troubleshooting "did I actually
 // reflash the new build onto this one?").
-#define FIRMWARE_VERSION "1.4.4"
+#define FIRMWARE_VERSION "1.5.1"
 
 // Overrides WiFiManager's default button colors (blue background, white
 // text) with yellow/black. WiFiManager's own default button CSS is:
@@ -260,6 +318,21 @@ unsigned long lastActivityMs = 0;
 unsigned long lastTriggerMs = 0;
 bool hasTriggeredThisWake = false;
 
+// Whether the PC app has acknowledged the *current* trigger yet - reset to
+// false every time a fresh trigger goes out (all three send sites below set
+// this alongside their existing lastTriggerMs/hasTriggeredThisWake updates),
+// set true the instant the ack reply arrives (see the udp.parsePacket()
+// check in setup()'s awake loop). lastTriggerAckMs is only meaningful once
+// lastTriggerAcked is true - it's what round-trip time and the /trigger_ack
+// endpoint below are computed from.
+bool lastTriggerAcked = false;
+unsigned long lastTriggerAckMs = 0;
+// 0 = ack LED is idle/off. Non-zero = the millis() timestamp it was turned
+// on, so the main loop can turn it back off after ACK_LED_BLINK_MS without
+// ever calling delay() - a blocking blink here would reintroduce exactly
+// the kind of loop stall today's other fixes were about removing.
+unsigned long ackLedOnAtMs = 0;
+
 // WiFiManagerParameter objects must outlive the wm.autoConnect() /
 // wm.startConfigPortal() call that uses them; allocating them with `new`
 // in setup() (after loadConfig() has populated the defaults it should
@@ -310,19 +383,38 @@ long remainingSecondsNow() {
 // up". Blinks off briefly on each subsequent pedal press during the awake
 // window (not the initial wake-up press itself, since that's implicit in
 // the LED turning on), then returns to solid on. Off again before deep
-// sleep.
+// sleep. Drives both the onboard LED and its external mirror (see
+// EXT_STATUS_LED_PIN's comment) together, so every call site below stays a
+// single ledOn()/ledOff() - nothing had to change anywhere else in the file
+// to pick up the second LED.
 void ledOn() {
   digitalWrite(LED_PIN, LED_ACTIVE_LOW ? LOW : HIGH);
+  digitalWrite(EXT_STATUS_LED_PIN, EXT_STATUS_LED_ACTIVE_LOW ? LOW : HIGH);
 }
 
 void ledOff() {
   digitalWrite(LED_PIN, LED_ACTIVE_LOW ? HIGH : LOW);
+  digitalWrite(EXT_STATUS_LED_PIN, EXT_STATUS_LED_ACTIVE_LOW ? HIGH : LOW);
 }
 
 void ledBlinkForPress() {
   ledOff();
   delay(200);
   ledOn();
+}
+
+// ---- Ack LED ----
+// Separate from the status LED above - see ACK_LED_PIN's comment for why.
+// Deliberately no blocking blink() helper here like ledBlinkForPress()'s:
+// turning this LED off again is handled non-blockingly in the main loop
+// (see ackLedOnAtMs), since the ack can arrive at any arbitrary moment
+// mid-loop, not just right after a press when a brief delay() is tolerable.
+void ackLedOn() {
+  digitalWrite(ACK_LED_PIN, ACK_LED_ACTIVE_LOW ? LOW : HIGH);
+}
+
+void ackLedOff() {
+  digitalWrite(ACK_LED_PIN, ACK_LED_ACTIVE_LOW ? HIGH : LOW);
 }
 
 // Payload format for both packet kinds below: "<K>:<secondsUntilSleep>",
@@ -423,6 +515,7 @@ void handleStatusRoot() {
   page += "<p><b>IP:</b> " + WiFi.localIP().toString() + "<br>";
   page += "<b>Wi-Fi network:</b> " + WiFi.SSID() + "<br>";
   page += "<b>Last trigger:</b> " + lastTrigger + "<br>";
+  page += "<b>PC acknowledged:</b> <span id='ackstate'>-</span><br>";
   page += "<b>Sleeping in:</b> <span id='sleeptimer'>" + String(remainingS) +
       "</span>s (any activity here resets this)</p>";
   // Full-width bar right after a fresh press, shrinking from the right as
@@ -550,6 +643,33 @@ void handleStatusRoot() {
         "document.getElementById('pinstate').textContent = t;"
         "});"
       "}, 250);"
+      // Shows whether the PC app actually received the last trigger, not
+      // just that the pedal thinks it sent one - see handleStatusTriggerAck()
+      // and the physical second LED (ACK_LED_PIN) that lights up at the same
+      // moment this text updates.
+      "function updateAckState(){"
+        "fetch('/trigger_ack').then(function(r){return r.text();}).then(function(t){"
+          "var el = document.getElementById('ackstate');"
+          "if (t === 'NONE') {"
+            "el.textContent = 'no trigger sent yet this session';"
+            "el.style.color = '#666';"
+          "} else if (t.indexOf('ACKED:') === 0) {"
+            "var ms = parseInt(t.substring(6), 10);"
+            "el.textContent = 'yes (' + ms + 'ms)';"
+            "el.style.color = '#2ecc71';"
+          "} else if (t.indexOf('PENDING:') === 0) {"
+            "var ms = parseInt(t.substring(8), 10);"
+            "if (ms > 3000) {"
+              "el.textContent = 'no response yet (' + (ms/1000).toFixed(1) + 's) - is the app running?';"
+              "el.style.color = '#e74c3c';"
+            "} else {"
+              "el.textContent = 'waiting...';"
+              "el.style.color = '#f39c12';"
+            "}"
+          "}"
+        "}).catch(function(){});"
+      "}"
+      "setInterval(updateAckState, 500);"
       "</script>";
   page += "<form method='POST' action='/trigger'>"
       "<button type='submit' id='triggerbtn'>Send test trigger now</button></form>";
@@ -620,6 +740,7 @@ void handleStatusTrigger() {
   sendTrigger();
   lastTriggerMs = millis();
   hasTriggeredThisWake = true;
+  lastTriggerAcked = false; // waiting on the PC's ack for this new trigger
   statusServer.sendHeader("Location", "/");
   statusServer.send(302, "text/plain", "");
 }
@@ -641,8 +762,27 @@ void handleStatusVersion() {
   statusServer.send(200, "application/json", json);
 }
 
+// Polled by the status page's JS every ~500ms to show whether the PC app
+// actually received the last trigger - not just that the pedal thinks it
+// sent one. Three possible replies:
+//   "NONE"        - no trigger sent yet this wake session
+//   "ACKED:123"   - acknowledged; 123 is the round-trip time in ms
+//   "PENDING:456" - sent 456ms ago, no ack yet (still might arrive)
+// Deliberately does NOT reset lastActivityMs - same reasoning as /pin and
+// /remaining: watching this page shouldn't itself keep the pedal awake.
+void handleStatusTriggerAck() {
+  if (!hasTriggeredThisWake) {
+    statusServer.send(200, "text/plain", "NONE");
+  } else if (lastTriggerAcked) {
+    statusServer.send(200, "text/plain", "ACKED:" + String(lastTriggerAckMs - lastTriggerMs));
+  } else {
+    statusServer.send(200, "text/plain", "PENDING:" + String(millis() - lastTriggerMs));
+  }
+}
+
 void goToSleep() {
   ledOff();
+  ackLedOff();
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   // pinMode()'s pull-up alone isn't guaranteed to survive deep sleep, so
@@ -685,10 +825,15 @@ void setup() {
   // wrong flash, chip not actually running our code, wrong LED_PIN/wiring,
   // dead board, etc. - not a Wi-Fi or GPIO4 bug specifically.
   pinMode(LED_PIN, OUTPUT);
+  pinMode(EXT_STATUS_LED_PIN, OUTPUT);
+  pinMode(ACK_LED_PIN, OUTPUT);
+  ackLedOff(); // stays off until the PC actually acknowledges a trigger
   for (int i = 0; i < 8; i++) {
     digitalWrite(LED_PIN, LED_ACTIVE_LOW ? LOW : HIGH);
+    digitalWrite(EXT_STATUS_LED_PIN, EXT_STATUS_LED_ACTIVE_LOW ? LOW : HIGH);
     delay(150);
     digitalWrite(LED_PIN, LED_ACTIVE_LOW ? HIGH : LOW);
+    digitalWrite(EXT_STATUS_LED_PIN, EXT_STATUS_LED_ACTIVE_LOW ? HIGH : LOW);
     delay(150);
   }
 
@@ -783,10 +928,19 @@ void setup() {
   WiFi.setSleep(false);
   ledOn(); // solid on = Wi-Fi link up
 
+  // Bind our own local UDP port before sending anything, so the PC app's
+  // one-byte acknowledgement reply has a known, fixed address to come back
+  // to - see PEDAL_UDP_LISTEN_PORT's comment above. Same WiFiUDP object is
+  // still used for the outgoing broadcasts below via beginPacket()/
+  // endPacket(); binding it first doesn't change that, it just also makes
+  // it able to receive.
+  udp.begin(PEDAL_UDP_LISTEN_PORT);
+
   lastActivityMs = millis(); // start the awake window at the full linger time
   sendTrigger();
   lastTriggerMs = millis();
   hasTriggeredThisWake = true;
+  lastTriggerAcked = false; // waiting on the PC's ack for this new trigger
   Serial.println("[pedal] sent initial trigger, awake for " + String(lingerSeconds) + "s");
 
   // Live status/settings page, reachable at this device's IP for as long
@@ -797,6 +951,7 @@ void setup() {
   statusServer.on("/save", HTTP_POST, handleStatusSave);
   statusServer.on("/trigger", HTTP_POST, handleStatusTrigger);
   statusServer.on("/version", HTTP_GET, handleStatusVersion);
+  statusServer.on("/trigger_ack", HTTP_GET, handleStatusTriggerAck);
   statusServer.begin();
 
   lastActivityMs = millis();
@@ -827,6 +982,7 @@ void setup() {
       lastActivityMs = millis(); // reset *before* sendTrigger() reads remainingSecondsNow()
       sendTrigger();
       lastTriggerMs = millis();
+      lastTriggerAcked = false; // waiting on the PC's ack for this new trigger
       Serial.println("[pedal] pedal pressed -> trigger sent, sleep countdown reset");
       ledBlinkForPress(); // off 200ms, back to solid blue - visual press feedback
       if (DEBOUNCE_MS > 200) delay(DEBOUNCE_MS - 200);
@@ -866,6 +1022,37 @@ void setup() {
     if (millis() - lastUdpHeartbeatMs >= UDP_HEARTBEAT_INTERVAL_MS) {
       lastUdpHeartbeatMs = millis();
       sendHeartbeat();
+    }
+
+    // Turn the ack LED back off once it's been lit for ACK_LED_BLINK_MS -
+    // scheduled here rather than a blocking delay(), so a blink never stalls
+    // the rest of this loop (same reasoning as everywhere else this session).
+    if (ackLedOnAtMs != 0 && millis() - ackLedOnAtMs >= ACK_LED_BLINK_MS) {
+      ackLedOff();
+      ackLedOnAtMs = 0;
+    }
+
+    // Check for the PC app's one-byte acknowledgement of our last trigger -
+    // sent the instant it receives one (see udp_trigger_listener's
+    // sock.sendto(b"A", addr) on the PC side). Requires udp.begin() above so
+    // this WiFiUDP object is bound to a fixed local port the PC can actually
+    // reply to. Only the *first* ack for a given trigger matters - ignore
+    // any further replies until the next trigger resets lastTriggerAcked.
+    int ackPacketSize = udp.parsePacket();
+    if (ackPacketSize > 0) {
+      char ackBuf[8];
+      int ackLen = udp.read(ackBuf, sizeof(ackBuf) - 1);
+      if (ackLen > 0) {
+        ackBuf[ackLen] = '\0';
+        if (ackBuf[0] == 'A' && !lastTriggerAcked) {
+          lastTriggerAcked = true;
+          lastTriggerAckMs = millis();
+          ackLedOn();
+          ackLedOnAtMs = millis();
+          Serial.println("[pedal] PC acknowledged trigger (" +
+                          String(lastTriggerAckMs - lastTriggerMs) + "ms round-trip)");
+        }
+      }
     }
     delay(20);
   }

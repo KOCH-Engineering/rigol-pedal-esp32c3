@@ -11,21 +11,41 @@ are busy with test leads.
   may need adjusting for a different board's silkscreen/layout).
 - A normally-open momentary foot switch/pedal, wired between **GPIO4** and
   a nearby **GND** pad.
+- Two optional external LEDs (each with its own current-limiting resistor,
+  a few hundred ohms, to GND) - see the pinout table below. Neither is
+  required; leave a pin unconnected and the firmware just drives an LED
+  that isn't physically there.
 
-No external resistor needed - the firmware enables the chip's own
-built-in pull-up on GPIO4, both via `pinMode` for normal operation and,
-right before sleeping, again via the IDF GPIO driver (`gpio_pullup_en`) to
-make sure it's actually held through deep sleep, since `pinMode`'s setting
-isn't guaranteed to survive that. (An earlier draft used `rtc_gpio_pullup_en`,
-which is the right call on the original ESP32 but doesn't exist on the
-ESP32-C3's simpler GPIO/RTC architecture - confirmed by an actual build
-error, fixed to the plain `gpio_pullup_en`/`gpio_pulldown_dis`.)
+### GPIO pinout
+
+| GPIO | Name | Purpose |
+|------|------|---------|
+| **GPIO4** | `BUTTON_PIN` | Foot pedal switch, other side to GND. Internal pull-up - no external resistor needed. Also the deep-sleep wake source. |
+| **GPIO8** | `LED_PIN` | Onboard blue status LED (built into most ESP32-C3 dev boards - not a pin you wire yourself). Blinks at boot, solid on once Wi-Fi is up, blinks off/on briefly on each press, off before sleep. |
+| **GPIO6** | `EXT_STATUS_LED_PIN` *(optional)* | External LED mirroring GPIO8's exact state, so the same status is visible from outside the pedal's enclosure instead of only on the tiny onboard LED. |
+| **GPIO5** | `ACK_LED_PIN` *(optional)* | External LED that blinks briefly the moment the PC app acknowledges receiving a trigger - see "PC acknowledgement" below. |
+
+No external resistor needed for the button - the firmware enables the
+chip's own built-in pull-up on GPIO4, both via `pinMode` for normal
+operation and, right before sleeping, again via the IDF GPIO driver
+(`gpio_pullup_en`) to make sure it's actually held through deep sleep,
+since `pinMode`'s setting isn't guaranteed to survive that. (An earlier
+draft used `rtc_gpio_pullup_en`, which is the right call on the original
+ESP32 but doesn't exist on the ESP32-C3's simpler GPIO/RTC architecture -
+confirmed by an actual build error, fixed to the plain
+`gpio_pullup_en`/`gpio_pulldown_dis`.)
 
 GPIO4 was chosen deliberately: it's RTC-capable, isn't one of the three
 strapping pins, and - confirmed against real-world ESP32-C3 deep-sleep
 reports - GPIO0/GPIO1 are RTC-capable too but do *not* reliably work as
 wake sources on this chip (a known Arduino-ESP32 core limitation); only
-GPIO2-5 do.
+GPIO2-5 do. GPIO5 and GPIO6 were chosen for the two optional LEDs as
+plain general-purpose pins - not strapping pins, not used for flash/USB -
+so they're safe to drive freely; rewire `ACK_LED_PIN`/`EXT_STATUS_LED_PIN`
+in `src/main.cpp` if either is inconvenient on your own board's layout.
+Each LED's active-high/active-low polarity is its own separate `#define`
+(`ACK_LED_ACTIVE_LOW`, `EXT_STATUS_LED_ACTIVE_LOW`) - flip whichever one
+lights up backwards from how you wired it.
 
 ## Building and flashing
 
@@ -94,13 +114,17 @@ is why an earlier version of these instructions didn't work.)
   presses during one probing session doesn't pay the Wi-Fi-reconnect cost
   each time.
 - After that window passes with no press, it goes back to deep sleep.
-- The onboard blue LED (**GPIO8**) blinks a few times at boot (proof the
-  firmware is actually running, independent of Wi-Fi), turns solid on once
-  connected to Wi-Fi ("link up"), blinks off for 200ms and back on each
-  time the pedal is pressed while awake, and turns off before going to
-  deep sleep - confirmed working as described. If it ever behaves
-  backwards on a different board (on when it should be off, etc.), flip
-  `LED_ACTIVE_LOW` in `src/main.cpp`.
+- The onboard blue LED (**GPIO8**, mirrored on the optional external
+  **GPIO6** LED) blinks a few times at boot (proof the firmware is
+  actually running, independent of Wi-Fi), turns solid on once connected
+  to Wi-Fi ("link up"), blinks off for 200ms and back on each time the
+  pedal is pressed while awake, and turns off before going to deep sleep -
+  confirmed working as described. If either LED ever behaves backwards on
+  a different board (on when it should be off, etc.), flip
+  `LED_ACTIVE_LOW` / `EXT_STATUS_LED_ACTIVE_LOW` in `src/main.cpp`.
+- The optional **GPIO5** ack LED blinks separately, once per trigger, the
+  moment the PC app actually confirms it received that trigger - see
+  "PC acknowledgement" below.
 
 ## Live status page (while awake)
 
@@ -116,13 +140,39 @@ bounce without a multimeter — plus:
 - A **Send test trigger now** button, to confirm the PC app is receiving
   triggers without needing to walk over and press the pedal.
 - A settings form to change the **trigger UDP port** and the **stay-awake
-  duration** (10–3600 seconds) — applied immediately and saved to flash,
+  duration** (15–3600 seconds) — applied immediately and saved to flash,
   no reflash or Wi-Fi reconfiguration needed.
+- A **PC acknowledged** line showing whether the app on the PC actually
+  received the last trigger - "waiting..." right after a press, "yes
+  (Nms)" once it's confirmed, or a warning if nothing's come back after a
+  few seconds. See "PC acknowledgement" below for how this works.
 
 Loading the page or clicking either button also resets the sleep
 countdown. This page only exists while the pedal is awake — once it goes
 back to deep sleep it disappears from the network entirely until the next
 press; there's no way to wake it remotely.
+
+## PC acknowledgement
+
+Historically the pedal only ever *sent* UDP - one-way, no confirmation
+that anything on the other end actually received it. As of firmware 1.5.0
+it also listens: the moment `rigol_speaking_multimeter.py` receives a
+trigger packet, it fires a one-byte reply straight back to the pedal
+(before doing anything else, so this confirms delivery, not that the
+meter necessarily produced a spoken reading afterwards - that part can
+still take a moment longer). The pedal shows this two ways:
+
+- The optional **ACK_LED_PIN** (GPIO5) LED blinks briefly the instant the
+  reply arrives - independent of whether you've released the pedal yet,
+  since round-trip timing has nothing to do with how long your foot stays
+  down.
+- The live status page's **PC acknowledged** line updates the same way,
+  polled every ~500ms from a small `/trigger_ack` endpoint.
+
+If neither ever fires, check that `rigol_speaking_multimeter.py` is
+actually running and that Windows Firewall isn't blocking the port (same
+troubleshooting as a trigger never arriving at all - see that project's
+README).
 
 ## Known limitations / possible follow-ups
 
@@ -130,8 +180,6 @@ press; there's no way to wake it remotely.
   reconnection after a long deep sleep - left out of this first version
   for simplicity.
 - No physical low-battery indicator.
-- No active discovery/handshake with the PC - it just broadcasts and
-  trusts the PC app to be listening. If a trigger doesn't arrive, check
-  Windows Firewall first (see rigol-speaking-multimeter's README); the
-  pedal side logs whether its own send succeeded (`udp.endPacket()`
-  result) over serial either way.
+- The PC's ack (see above) confirms the app received the trigger, not
+  that the meter reading was actually spoken successfully - a meter-side
+  failure after that point wouldn't be reflected back to the pedal.
