@@ -251,7 +251,7 @@ IPAddress broadcastAddr(255, 255, 255, 255);
 // "/version" and show which firmware a given pedal is running (handy once
 // more than one pedal is in use, or when troubleshooting "did I actually
 // reflash the new build onto this one?").
-#define FIRMWARE_VERSION "1.5.5"
+#define FIRMWARE_VERSION "1.5.6"
 
 // Overrides WiFiManager's default button colors (blue background, white
 // text) with yellow/black. WiFiManager's own default button CSS is:
@@ -654,7 +654,7 @@ void handleStatusRoot() {
   long remainingS = remainingSecondsNow();
 
   String lastTrigger = hasTriggeredThisWake
-      ? String((millis() - lastTriggerMs) / 1000) + "s ago"
+      ? String((millis() - lastTriggerMs) / 1000) + " s ago"
       : "not yet this session";
 
   String page = "<!DOCTYPE html><html><head><meta name='viewport' "
@@ -665,7 +665,7 @@ void handleStatusRoot() {
   page += "<h2>Rigol foot pedal</h2>";
   page += "<p><b>IP:</b> " + WiFi.localIP().toString() + "<br>";
   page += "<b>Wi-Fi network:</b> " + WiFi.SSID() + "<br>";
-  page += "<b>Last trigger:</b> " + lastTrigger + "<br>";
+  page += "<b>Last trigger:</b> <span id='lasttrigger'>" + lastTrigger + "</span><br>";
   page += "<b>PC acknowledged:</b> <span id='ackstate'>-</span><br>";
   page += "<b>Sleeping in:</b> <span id='sleeptimer'>" + String(remainingS) +
       "</span> s (any activity here resets this)</p>";
@@ -794,29 +794,50 @@ void handleStatusRoot() {
         "document.getElementById('pinstate').textContent = t;"
         "});"
       "}, 250);"
+      // Turns an age in ms into a short "Ns ago" / "Nm Ns ago" string - used
+      // so both the ack line and the "Last trigger" line always say plainly
+      // how long ago the underlying press happened, not just a number that
+      // could be mistaken for "just now" (see formatAge() call sites below).
+      "function formatAge(ms){"
+        "var s = Math.floor(ms / 1000);"
+        "if (s < 60) return s + ' s ago';"
+        "var m = Math.floor(s / 60);"
+        "return m + ' m ' + (s % 60) + ' s ago';"
+      "}"
       // Shows whether the PC app actually received the last trigger, not
       // just that the pedal thinks it sent one - see handleStatusTriggerAck()
       // and the physical second LED (ACK_LED_PIN) that lights up at the same
-      // moment this text updates.
+      // moment this text updates. Also re-states how long ago that trigger
+      // happened alongside the round-trip time, and keeps the "Last trigger"
+      // line ticking live off the same poll response - a bare "yes (266ms)"
+      // used to look like fresh news no matter how long ago the press
+      // actually was, since 266ms always reads as "just now".
       "function updateAckState(){"
         "fetch('/trigger_ack').then(function(r){return r.text();}).then(function(t){"
           "var el = document.getElementById('ackstate');"
+          "var lastEl = document.getElementById('lasttrigger');"
           "if (t === 'NONE') {"
             "el.textContent = 'no trigger sent yet this session';"
             "el.style.color = '#666';"
-          "} else if (t.indexOf('ACKED:') === 0) {"
-            "var ms = parseInt(t.substring(6), 10);"
-            "el.textContent = 'yes (' + ms + ' ms)';"
+            "return;"
+          "}"
+          "var parts = t.split(':');"
+          "if (parts[0] === 'ACKED') {"
+            "var rtt = parseInt(parts[1], 10);"
+            "var age = parseInt(parts[2], 10);"
+            "el.textContent = 'yes, ' + rtt + ' ms round-trip (press was ' + formatAge(age) + ')';"
             "el.style.color = '#2ecc71';"
-          "} else if (t.indexOf('PENDING:') === 0) {"
-            "var ms = parseInt(t.substring(8), 10);"
-            "if (ms > 3000) {"
-              "el.textContent = 'no response yet (' + (ms/1000).toFixed(1) + ' s) - is the app running?';"
+            "if (lastEl) lastEl.textContent = formatAge(age);"
+          "} else if (parts[0] === 'PENDING') {"
+            "var age2 = parseInt(parts[1], 10);"
+            "if (age2 > 3000) {"
+              "el.textContent = 'no response yet (' + (age2/1000).toFixed(1) + ' s) - is the app running?';"
               "el.style.color = '#e74c3c';"
             "} else {"
-              "el.textContent = 'waiting...';"
+              "el.textContent = 'waiting for PC ack...';"
               "el.style.color = '#f39c12';"
             "}"
+            "if (lastEl) lastEl.textContent = formatAge(age2);"
           "}"
         "}).catch(function(){});"
       "}"
@@ -949,10 +970,15 @@ void handleStatusVersion() {
 
 // Polled by the status page's JS every ~500ms to show whether the PC app
 // actually received the last trigger - not just that the pedal thinks it
-// sent one. Three possible replies:
-//   "NONE"        - no trigger sent yet this wake session
-//   "ACKED:123"   - acknowledged; 123 is the round-trip time in ms
-//   "PENDING:456" - sent 456ms ago, no ack yet (still might arrive)
+// sent one. Also carries how long ago that trigger happened (age_ms) so the
+// page can make clear whether "yes" means "just now" or "acknowledged a
+// while ago, nothing has happened since" - showing only the round-trip time
+// (e.g. "yes (266ms)") looked like fresh news even minutes after the actual
+// press, since 266ms reads as "just now" regardless of when it really
+// occurred. Four fields, colon-separated:
+//   "NONE"              - no trigger sent yet this wake session
+//   "ACKED:123:4500"    - acked; 123ms round-trip, press was 4500ms ago
+//   "PENDING:456"       - sent 456ms ago, no ack yet (still might arrive)
 // Deliberately does NOT reset lastActivityMs - same reasoning as /pin and
 // /remaining: watching this page shouldn't itself keep the pedal awake.
 void handleStatusTriggerAck() {
@@ -962,7 +988,9 @@ void handleStatusTriggerAck() {
   if (!hasTriggeredThisWake) {
     statusServer.send(200, "text/plain", "NONE");
   } else if (lastTriggerAcked) {
-    statusServer.send(200, "text/plain", "ACKED:" + String(lastTriggerAckMs - lastTriggerMs));
+    statusServer.send(200, "text/plain",
+        "ACKED:" + String(lastTriggerAckMs - lastTriggerMs) + ":" +
+        String(millis() - lastTriggerMs));
   } else {
     statusServer.send(200, "text/plain", "PENDING:" + String(millis() - lastTriggerMs));
   }
