@@ -251,7 +251,7 @@ IPAddress broadcastAddr(255, 255, 255, 255);
 // "/version" and show which firmware a given pedal is running (handy once
 // more than one pedal is in use, or when troubleshooting "did I actually
 // reflash the new build onto this one?").
-#define FIRMWARE_VERSION "1.5.9"
+#define FIRMWARE_VERSION "1.5.10"
 
 // Overrides WiFiManager's default button colors (blue background, white
 // text) with yellow/black. WiFiManager's own default button CSS is:
@@ -652,6 +652,59 @@ const char STATUS_PAGE_LOGO[] =
     " style='max-width:150px;height:auto;display:block;margin:0 auto;'>"
     "</div>";
 
+// The real KOCH Engineering logo (151x42 RGBA PNG), supplied directly and
+// verified byte-for-byte (CRC per chunk, zlib decompress, base64
+// round-trip) before embedding - same discipline as STATUS_PAGE_LOGO
+// above, after that earlier crash. Shown under the "KOCH Engineering by
+// Henrik J. Koch" line at the bottom of the status page.
+const char KOCH_LOGO_HTML[] =
+    "<div style='text-align:center;padding:4px 0 0;'>"
+    "<img src='data:image/png;base64,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'"
+    " style='max-width:100px;height:auto;display:block;margin:6px auto 0;'>"
+    "</div>";
+
 void handleStatusRoot() {
   lastActivityMs = millis(); // just loading the page counts as activity,
                               // so it always shows the full window remaining
@@ -881,6 +934,7 @@ void handleStatusRoot() {
       "hold the pedal down for 3+ seconds right as it wakes.</p>";
   page += "<p style='color:#999;font-size:0.75em'>Firmware v" FIRMWARE_VERSION "</p>";
   page += "<p style='color:#999;font-size:0.75em'>KOCH Engineering by Henrik J. Koch</p>";
+  page += KOCH_LOGO_HTML;
   page += "</body></html>";
 
   // Connection: close - see handleStatusRemaining()'s comment. Applies here
