@@ -98,8 +98,10 @@ whole local network rather than addressing one specific PC, so nothing
 needs re-entering if the PC's DHCP-assigned IP ever changes.
 
 To redo this later (new Wi-Fi network, changed trigger port), hold the
-**foot pedal itself** down for 3+ seconds right as it wakes, instead of a
-quick tap. (Not the onboard BOOT button — that's a boot-mode strapping pin
+**foot pedal itself** down for 10+ seconds right as it wakes, instead of a
+quick tap. The hold time is deliberately long so that leaning on the pedal
+or a stuck switch during normal use won't accidentally wipe the saved Wi-Fi.
+(Not the onboard BOOT button — that's a boot-mode strapping pin
 on the ESP32-C3, and holding it down during power-on/reset sends the chip
 into its serial bootloader instead of running the firmware at all, which
 is why an earlier version of these instructions didn't work.)

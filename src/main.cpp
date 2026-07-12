@@ -58,8 +58,10 @@
   look up during setup.
 
   To force re-entering setup mode later (new Wi-Fi network, different
-  trigger port), hold the foot pedal itself down for 3+ seconds right as
-  it wakes (instead of a quick tap). This deliberately does NOT use the
+  trigger port), hold the foot pedal itself down for 10+ seconds right as
+  it wakes (instead of a quick tap) - deliberately long, so leaning on the
+  pedal or a stuck switch during normal use doesn't accidentally wipe the
+  saved Wi-Fi. This deliberately does NOT use the
   onboard BOOT button (GPIO9): that pin is one of the ESP32-C3's boot-mode
   strapping pins, and holding it low during a reset/power-up diverts the
   chip straight into the ROM's serial download bootloader instead of
@@ -194,7 +196,10 @@
 #define PEDAL_UDP_LISTEN_PORT 47270
 
 // ---- Timing ----
-#define FORCE_SETUP_HOLD_MS 3000UL       // how long to hold the pedal to force re-setup
+#define FORCE_SETUP_HOLD_MS 10000UL      // how long to hold the pedal to force re-setup - long
+                                          // enough that a normal press/hold during actual use
+                                          // (e.g. leaning on it, a stuck pedal) won't accidentally
+                                          // wipe the saved Wi-Fi and drop into setup mode
 #define DEFAULT_LINGER_S 300             // default: stay awake 5 min after a press
 // Floor for the live-settings page. Not just a sanity clamp: this is also
 // the least amount of time you're guaranteed to have to notice you set it
@@ -251,7 +256,7 @@ IPAddress broadcastAddr(255, 255, 255, 255);
 // "/version" and show which firmware a given pedal is running (handy once
 // more than one pedal is in use, or when troubleshooting "did I actually
 // reflash the new build onto this one?").
-#define FIRMWARE_VERSION "1.5.10"
+#define FIRMWARE_VERSION "1.5.11"
 
 // Overrides WiFiManager's default button colors (blue background, white
 // text) with yellow/black. WiFiManager's own default button CSS is:
@@ -931,7 +936,7 @@ void handleStatusRoot() {
   page += "<p><input type='submit' id='savebtn' value='Save settings'></p>";
   page += "</form>";
   page += "<p style='color:#666;font-size:0.85em'>To change Wi-Fi network, "
-      "hold the pedal down for 3+ seconds right as it wakes.</p>";
+      "hold the pedal down for 10+ seconds right as it wakes.</p>";
   page += "<p style='color:#999;font-size:0.75em'>Firmware v" FIRMWARE_VERSION "</p>";
   page += "<p style='color:#999;font-size:0.75em'>KOCH Engineering by Henrik J. Koch</p>";
   page += KOCH_LOGO_HTML;
@@ -1156,7 +1161,7 @@ void setup() {
   wm.setConfigPortalTimeout(CONFIG_PORTAL_TIMEOUT_S);
   wm.setCustomHeadElement(CUSTOM_PORTAL_CSS);
 
-  // Holding the pedal itself down for 3+ seconds (instead of a quick tap)
+  // Holding the pedal itself down for 10+ seconds (instead of a quick tap)
   // forces re-provisioning (new Wi-Fi network, new trigger port) instead
   // of trying saved settings first. Every wake starts with the pedal
   // already down (that's what triggers the wake), so a normal quick tap
