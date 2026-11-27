@@ -1,3 +1,5 @@
+![banner](docs/banner.png)
+
 # Rigol Speaking Multimeter - ESP32-C3 Foot Pedal
 
 A Wi-Fi foot pedal trigger for [rigol-speaking-multimeter](../rigol-speaking-multimeter):
