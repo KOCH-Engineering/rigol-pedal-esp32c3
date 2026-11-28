@@ -225,3 +225,7 @@ just works.
 - The PC's ack (see above) confirms the app received the trigger, not
   that the meter reading was actually spoken successfully - a meter-side
   failure after that point wouldn't be reflected back to the pedal.
+
+## Support
+
+This project is free and open source. If it saves you time and you'd like to say thanks, you can [buy me a coffee ☕](https://buymeacoffee.com/henrikkoch) – thank you!
